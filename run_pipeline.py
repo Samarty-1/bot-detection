@@ -75,24 +75,45 @@ def main() -> None:
 
     results = []
 
-    rules = RuleBaseline().fit(X)
-    results.append(evaluate.report(rules.name, y, rules.score(X), meta, args.review_capacity))
-
-    iso = IsolationForestDetector(contamination=0.02, seed=args.seed).fit(X)
-    results.append(evaluate.report(iso.name, y, iso.score(X), meta, args.review_capacity))
-
+    # All three detectors are SCORED on the same holdout sessions.
+    #
+    # They used to be scored on different data: rules and the isolation forest
+    # on all ~4,100 sessions, the gradient booster on its own 30% holdout. Two
+    # of this scorecard's numbers are scale-dependent, so that made the
+    # headline supervised-vs-unsupervised comparison invalid:
+    #
+    #   * cost_at_best is an absolute sum over sessions, so the booster's cost
+    #     was ~30% of the others' by construction -- it looked cheaper for
+    #     being measured on a third of the traffic.
+    #   * precision_at_k spends a FIXED analyst budget (--review-capacity)
+    #     against pools of different sizes. At a ~2% bot rate the holdout
+    #     contains ~3x fewer bots, but the same 100 review slots, which
+    #     penalised the booster for the opposite reason.
+    #
+    # A per-detector do-nothing reference patched the first of those and not
+    # the second. Scoring everything on one common set fixes both, and costs
+    # nothing in realism: the rule baseline is stateless, and the isolation
+    # forest is still FIT on the full unlabelled mixed stream (the honest
+    # production setting -- you cannot pre-filter live traffic), just reported
+    # on the shared holdout.
     gb = SupervisedUpperBound(seed=args.seed).fit(X, y)
     X_te, y_te = gb.holdout()
     meta_te = meta.loc[X_te.index].reset_index(drop=True)
-    results.append(
-        evaluate.report(gb.name, y_te.reset_index(drop=True), gb.score(X_te), meta_te, args.review_capacity)
-    )
+    y_te = y_te.reset_index(drop=True)
+    holdout_reference = evaluate.baseline_cost(y_te)
+    print(f"    all detectors scored on a common {len(X_te):,}-session holdout "
+          f"({y_te.mean():.2%} bots); doing nothing on it costs {holdout_reference:.0f}\n")
+
+    rules = RuleBaseline().fit(X)
+    results.append(evaluate.report(rules.name, y_te, rules.score(X_te), meta_te, args.review_capacity))
+
+    iso = IsolationForestDetector(contamination=0.02, seed=args.seed).fit(X)
+    results.append(evaluate.report(iso.name, y_te, iso.score(X_te), meta_te, args.review_capacity))
+
+    results.append(evaluate.report(gb.name, y_te, gb.score(X_te), meta_te, args.review_capacity))
 
     for r in results:
-        # The supervised model is scored on its holdout, so its do-nothing
-        # reference is proportionally smaller.
-        ref = do_nothing if "boosting" not in r["detector"] else evaluate.baseline_cost(y_te)
-        print(evaluate.format_report(r, ref))
+        print(evaluate.format_report(r, holdout_reference))
         print()
 
     print("[4] what the labelled model leans on")
