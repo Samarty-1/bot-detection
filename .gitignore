@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# generated artifacts -- reproducible from a seed, no need to version
+data/*.parquet
+data/*.csv
